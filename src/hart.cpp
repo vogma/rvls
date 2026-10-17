@@ -150,6 +150,13 @@ bool SpikeIf::mmio_mmu(reg_t addr, size_t len, u8* bytes)  {
 }
 
 bool SpikeIf::mmio_load(reg_t addr, size_t len, u8* bytes)  {
+    if(vec && vec->routesMemory()) {
+        if(vec->injectsFault(addr)) return false;
+        if(isMem(addr)) {
+            vec->spikeLoad(addr, len, bytes);
+            return true;
+        }
+    }
     if(isMem(addr)) {
         memory->load(addr, len, bytes);
         return true;
@@ -169,6 +176,10 @@ bool SpikeIf::mmio_load(reg_t addr, size_t len, u8* bytes)  {
     return false;
 }
 bool SpikeIf::mmio_store(reg_t addr, size_t len, const u8* bytes)  {
+    if(vec && vec->routesMemory() && isMem(addr)) {
+        vec->spikeStore(addr, len, bytes);
+        return true;
+    }
     if(isMem(addr)) {
         memory->store(addr, len, (u8*) bytes);
         return true;
@@ -284,6 +295,10 @@ Hart::Hart(Context& context, u32 hartId, string isa, string priv, u32 physWidth,
             state->csrmap[counterhAddr] = std::make_shared<counter_proxy_csr_t>(proc, counterhAddr, mcounterh);
         }
     }
+    if(proc->any_vector_extensions()) {
+        vec = std::make_unique<VectorChecker>(*this);
+        sif->vec = vec.get();
+    }
 }
 
 void Hart::close() {
@@ -396,6 +411,7 @@ std::string Hart::formatFailureContext() const {
             dumpCsr(ss, state, csr, regWidth);
         }
     }
+    if(vec) ss << vec->formatContext();
 
     return ss.str();
 }
@@ -415,15 +431,49 @@ void Hart::writeRf(u32 rfKind, u32 address, std::span<const u8> data){
         if((csrWrite || csrRead) && csrAddress != address){
             failure(context, hartId, "duplicated CSR access \n");
         }
+        if(vec && isVectorCsrAddr(address)){
+            // Explicit vector CSR write: value-checked by the vector checker.
+            csrAddress = address;
+            vec->explicitCsrWrite(address, decodeRaw(data));
+            break;
+        }
         csrAddress = address;
         csrWrite = true;
         csrWriteData = decodeRaw(data);
+        break;
+    case 5: // implicit vector CSR update (vl, vtype, vstart, vxsat)
+        if(!vec) failure(context, hartId, "implicit vector CSR write on a hart without vectors \n");
+        vec->implicitCsr(address, decodeRaw(data));
         break;
     default:
         failure(context, hartId, "??? unknown RF trace \n");
         break;
     }
 
+}
+
+void Hart::writeVrf(u32 vreg, std::span<const u8> enable, std::span<const u8> data){
+    if(!vec) failure(context, hartId, "vector register write on a hart without vectors \n");
+    vec->vrfWrite(vreg, enable, data);
+}
+
+void Hart::writeVs(u64 value){
+    if(!vec) failure(context, hartId, "mstatus.VS event on a hart without vectors \n");
+    vec->vsWrite(value);
+}
+
+void Hart::setPolicy(const std::string &keyValues){
+    if(!vec) failure(context, hartId, "vector policy on a hart without vectors \n");
+    vec->setPolicy(keyValues);
+}
+
+// Every DUT IO access must be consumed by the instruction it belongs to.
+void Hart::checkIoQueueEmpty(){
+    if(!sif->ioQueue.empty()){
+        auto &io = sif->ioQueue.front();
+        failure(context, hartId, "IO EXTRA: %ld DUT IO access(es) left after the instruction, first %s 0x%lx (%d bytes)\n",
+                (long)sif->ioQueue.size(), io.write ? "write" : "read", io.address, io.size);
+    }
 }
 
 
@@ -448,9 +498,10 @@ void Hart::physExtends(u64 &v){
     //v = (u64)(((s64)v<<(64-physWidth)) >> (64-physWidth));
 }
 
-void Hart::trap(bool interrupt, u32 code){
+void Hart::trap(bool interrupt, u32 code, bool hasFields, u64 epc, u64 tval){
     int mask = 1 << code;
     auto fromPc = state->pc;
+    if(vec) vec->beforeStep(true);
     if(interrupt) state->mip->write_with_mask(mask, mask);
     proc->step(1);
     if(interrupt) state->mip->write_with_mask(mask, 0);
@@ -458,9 +509,24 @@ void Hart::trap(bool interrupt, u32 code){
         failure(context, hartId, "DUT did trap on %lx\n", fromPc);
     }
 
-    memory->step();
+    bool vectorStep = vec && vec->routesMemory();
+    if(!vectorStep) memory->step();
     assertEq(context, hartId, "DUT interrupt missmatch", interrupt, state->trap_interrupt);
     assertEq(context, hartId, "DUT code missmatch", code, state->trap_code);
+    if(vec) {
+        vec->afterStep(true, interrupt, code);
+        if(!interrupt && vec->lastWasVector() && !hasFields)
+            failure(context, hartId, "TRAP FIELDS MISSING: a synchronous trap of a vector instruction must report epc and tval\n");
+    }
+    if(hasFields) {
+        u64 xmask = proc->get_xlen() == 32 ? 0xffffffffull : ~0ull;
+        bool m = state->prv == PRV_M;
+        u64 refEpc = (m ? state->mepc : state->sepc)->read() & xmask;
+        u64 refTval = (m ? state->mtval : state->stval)->read() & xmask;
+        if((epc & xmask) != refEpc) failure(context, hartId, "XEPC MISMATCH DUT=0x%lx REF=0x%lx\n", epc & xmask, refEpc);
+        if((tval & xmask) != refTval) failure(context, hartId, "XTVAL MISMATCH DUT=0x%lx REF=0x%lx\n", tval & xmask, refTval);
+    }
+    checkIoQueueEmpty();
     physExtends(state->pc);
 }
 
@@ -522,9 +588,11 @@ void Hart::commit(u64 pc){
         instret = minstret->read();
     }
     //Run the spike model
+    if(vec) vec->beforeStep(false);
     proc->step(1);
     proc->clear_waiting_for_interrupt();
-    memory->step();
+    bool vectorStep = vec && vec->routesMemory();
+    if(!vectorStep) memory->step();
 
     //Sync back some CSR
     state->mip->unlogged_write_with_mask(-1, 0);
@@ -571,6 +639,9 @@ void Hart::commit(u64 pc){
     //Checks
 //        printf("%016lx %08lx\n", pc, state->last_inst.bits());
     assertTrue(context, hartId, "DUT missed a trap", !state->trap_happened);
+    u64 lastInst = state->last_inst.bits();
+    // Vector CSR instructions are checked by the vector checker.
+    bool vectorCsrInst = vec && (lastInst & 0x7F) == 0x73 && (lastInst & 0x3000) != 0 && isVectorCsrAddr(lastInst >> 20);
     for (auto item : state->log_reg_write) {
         if (item.first == 0)
           continue;
@@ -599,6 +670,7 @@ void Hart::commit(u64 pc){
                 break;
             default:{
                     if((inst & 0x7F) == 0x73 && (inst & 0x3000) != 0){
+                        if(vectorCsrInst) break;
                         if(!(csrAddress >= 1 && csrAddress <= 3)){ //avoid fcsr
                             if(csrWrite && (csrAddress == MIP || csrAddress == SIP) && rd == CSR_MVIP){
                                 continue; //Spike logs mip.SEIP's mvip alias before the architectural mip write.
@@ -616,6 +688,10 @@ void Hart::commit(u64 pc){
             }
             csrWrite = false;
         } break;
+        case 2: // vector register written (data checked by the vector checker)
+        case 3: // WRITE_VSTATUS marker (VS is compared by value)
+            if(!vec) failure(context, hartId, "??? unknown spike trace %lx\n", item.first & 0xf);
+            break;
         default: {
             failure(context, hartId, "??? unknown spike trace %lx\n", item.first & 0xf);
         } break;
@@ -627,6 +703,8 @@ void Hart::commit(u64 pc){
     assertTrue(context, hartId, "INTEGER WRITE SPAWNED", !integerWriteValid);
     assertTrue(context, hartId, "FLOAT WRITE SPAWNED", !floatWriteValid);
     csrWrite = false;
+    if(vec) vec->afterStep(false, false, 0);
+    checkIoQueueEmpty();
 }
 
 void Hart::ioAccess(TraceIo io){

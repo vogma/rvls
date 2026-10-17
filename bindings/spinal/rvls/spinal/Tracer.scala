@@ -21,6 +21,15 @@ class TraceIo (var write: Boolean,
   def serialized() = f"${write.toInt} $address%016x ${data.reverse.toList.bytesToHex} $mask%02x $size ${error.toInt}"
 }
 
+object TraceBackend{
+  // Byte-enable mask, packed little endian: bit i enables data byte i.
+  def maskHex(mask : Array[Byte], len : Int) : String = {
+    require(mask.length == (len + 7) / 8, s"mask of ${mask.length} bytes for $len data bytes")
+    for(i <- len until mask.length * 8) require((mask(i / 8) >> (i % 8) & 1) == 0, s"mask enables byte $i of $len")
+    (0 until (len + 3) / 4).reverse.map(d => f"${mask(d / 2) >> (d % 2 * 4) & 0xF}%x").mkString
+  }
+}
+
 trait TraceBackend{
   def spinalSimFlusher(period: Long): this.type = {
     periodicaly(period)(flush())
@@ -48,6 +57,7 @@ trait TraceBackend{
   def readRf(hardId : Int, rfKind : Int, address : Int, data : Array[Byte]) //address out of range mean unknown
   def commit(hartId : Int, pc : Long, instruction : Long): Unit
   def trap(hartId: Int, interrupt : Boolean, code : Int)
+  def trap(hartId: Int, interrupt : Boolean, code : Int, epc : Long, tval : Long) : Unit //Mandatory for synchronous traps of vector instructions
   def ioAccess(hartId: Int, access : TraceIo) : Unit
   def setInterrupt(hartId : Int, intId : Int, value : Boolean) : Unit
   def addRegion(hartId : Int, kind : Int, base : Long, size : Long) : Unit
@@ -62,9 +72,15 @@ trait TraceBackend{
   def loadCommit(hartId: Int, id : Long) : Unit
   def loadFlush(hartId: Int) : Unit
   def storeExecute(hartId: Int, id : Long, addr : Long, len : Long, data : Array[Byte]) : Unit
+  def storeExecute(hartId: Int, id : Long, addr : Long, len : Long, data : Array[Byte], mask : Array[Byte]) : Unit //mask : see TraceBackend.maskHex
   def storeCommit(hartId: Int, id: Long): Unit
   def storeBroadcast(hartId: Int, id: Long): Unit
   def storeConditional(hartId : Int, failure: Boolean) : Unit
+
+  // Vector state. Implicit vector CSRs use writeRf with rfKind 5.
+  def writeVrf(hartId : Int, vreg : Int, mask : Array[Byte], data : Array[Byte]) : Unit //Whole register data, mask : see TraceBackend.maskHex
+  def writeVs(hartId : Int, value : Int) : Unit //mstatus.VS after the instruction
+  def setPolicy(hartId : Int, policy : String) : Unit //"key=value ...", before any instruction
 
   def time(value : Long) : Unit
 
@@ -84,6 +100,7 @@ class DummyBackend() extends TraceBackend{
   override def readRf(hardId: Int, rfKind: Int, address: Int, data: Array[Byte]) = {}
   override def commit(hartId: Int, pc: Long, instruction : Long) = {}
   override def trap(hartId: Int, interrupt: Boolean, code: Int) = {}
+  override def trap(hartId: Int, interrupt: Boolean, code: Int, epc: Long, tval: Long) = {}
   override def ioAccess(hartId: Int, access: TraceIo) = {}
   override def setInterrupt(hartId: Int, intId: Int, value: Boolean) = {}
   override def addRegion(hartId: Int, kind : Int, base: Long, size: Long) = {}
@@ -91,9 +108,13 @@ class DummyBackend() extends TraceBackend{
   override def loadCommit(hartId: Int, id: Long) = {}
   override def loadFlush(hartId: Int) = {}
   override def storeExecute(hartId: Int, id: Long, addr: Long, len: Long, data: Array[Byte]) = {}
+  override def storeExecute(hartId: Int, id: Long, addr: Long, len: Long, data: Array[Byte], mask: Array[Byte]) = {}
   override def storeCommit(hartId: Int, id: Long) = {}
   override def storeBroadcast(hartId: Int, id: Long) = {}
   override def storeConditional(hartId: Int, failure: Boolean) = {}
+  override def writeVrf(hartId: Int, vreg: Int, mask: Array[Byte], data: Array[Byte]) = {}
+  override def writeVs(hartId: Int, value: Int) = {}
+  override def setPolicy(hartId: Int, policy: String) = {}
   override def time(value: Long) = {}
   override def flush() = {}
   override def close() = {}
@@ -114,6 +135,10 @@ class FileBackend(f : File) extends TraceBackend{
 
   override def trap(hartId: Int, interrupt : Boolean, code : Int): Unit ={
     log(f"rv trap $hartId ${interrupt.toInt} $code\n")
+  }
+
+  override def trap(hartId: Int, interrupt : Boolean, code : Int, epc : Long, tval : Long): Unit ={
+    log(f"rv trap $hartId ${interrupt.toInt} $code $epc%016x $tval%016x\n")
   }
 
   override def writeRf(hartId: Int, rfKind: Int, address: Int, data: Array[Byte]) = {
@@ -176,6 +201,9 @@ class FileBackend(f : File) extends TraceBackend{
   override def storeExecute(hartId: Int, id : Long, addr : Long, len : Long, data : Array[Byte]) : Unit = {
     log(f"rv store exe $hartId $id $len $addr%016x ${data.reverse.toList.bytesToHex}\n")
   }
+  override def storeExecute(hartId: Int, id : Long, addr : Long, len : Long, data : Array[Byte], mask : Array[Byte]) : Unit = {
+    log(f"rv store exe $hartId $id $len $addr%016x ${data.reverse.toList.bytesToHex} ${TraceBackend.maskHex(mask, len.toInt)}\n")
+  }
   override def storeCommit(hartId: Int, id : Long) : Unit = {
     log(f"rv store com $hartId $id\n")
   }
@@ -184,6 +212,17 @@ class FileBackend(f : File) extends TraceBackend{
   }
   override def storeConditional(hartId: Int, failure: Boolean) = {
     log(f"rv store sc $hartId ${failure.toInt}\n")
+  }
+
+  override def writeVrf(hartId: Int, vreg: Int, mask: Array[Byte], data: Array[Byte]) = {
+    log(f"rv vrf w $hartId $vreg ${TraceBackend.maskHex(mask, data.length)} ${data.reverse.toList.bytesToHex}\n")
+  }
+  override def writeVs(hartId: Int, value: Int) = {
+    log(f"rv vs $hartId $value\n")
+  }
+  override def setPolicy(hartId: Int, policy: String) = {
+    require(!policy.exists(c => c == '\n' || c == '\r'), "policy must be one line")
+    log(f"rv policy $hartId $policy\n")
   }
 
   override def time(value: Long) = log(f"time $value\n")
@@ -225,6 +264,9 @@ class RvlsBackend(workspace : File = new File(".")) extends TraceBackend{
   override def trap(hartId: Int, interrupt: Boolean, code: Int): Unit = if(!Frontend.trap(handle, hartId, interrupt, code)) {
     throw new Exception(Frontend.getLastErrorMessage(handle))
   }
+  override def trap(hartId: Int, interrupt: Boolean, code: Int, epc: Long, tval: Long): Unit = if(!Frontend.trapWithFields(handle, hartId, interrupt, code, epc, tval)) {
+    throw new Exception(Frontend.getLastErrorMessage(handle))
+  }
   override def ioAccess(hartId: Int, access: TraceIo): Unit = Frontend.ioAccess(handle, hartId, access.write, access.address, access.data, access.mask, access.size, access.error)
   override def setInterrupt(hartId: Int, intId: Int, value: Boolean): Unit = Frontend.setInterrupt(handle, hartId, intId, value)
   override def addRegion(hartId: Int, kind: Int, base: Long, size: Long): Unit = Frontend.addRegion(handle, hartId, kind, base, size)
@@ -232,9 +274,13 @@ class RvlsBackend(workspace : File = new File(".")) extends TraceBackend{
   override def loadCommit(hartId: Int, id: Long): Unit = if(!Frontend.loadCommit(handle, hartId, id)) throw new Exception(Frontend.getLastErrorMessage(handle))
   override def loadFlush(hartId: Int): Unit = if(!Frontend.loadFlush(handle, hartId)) throw new Exception(Frontend.getLastErrorMessage(handle))
   override def storeExecute(hartId: Int, id: Long, addr: Long, len: Long, data: Array[Byte]): Unit = if(!Frontend.storeExecute(handle, hartId, id, addr, len, data)) throw new Exception(Frontend.getLastErrorMessage(handle))
+  override def storeExecute(hartId: Int, id: Long, addr: Long, len: Long, data: Array[Byte], mask: Array[Byte]): Unit = if(!Frontend.storeExecuteMasked(handle, hartId, id, addr, len, data, mask)) throw new Exception(Frontend.getLastErrorMessage(handle))
   override def storeCommit(hartId: Int, id: Long): Unit = if(!Frontend.storeCommit(handle, hartId, id)) throw new Exception(Frontend.getLastErrorMessage(handle))
   override def storeBroadcast(hartId: Int, id: Long): Unit = if(!Frontend.storeBroadcast(handle, hartId, id)) throw new Exception(Frontend.getLastErrorMessage(handle))
   override def storeConditional(hartId: Int, failure: Boolean): Unit = if(!Frontend.storeConditional(handle, hartId, failure)) throw new Exception(Frontend.getLastErrorMessage(handle))
+  override def writeVrf(hartId: Int, vreg: Int, mask: Array[Byte], data: Array[Byte]): Unit = if(!Frontend.writeVrf(handle, hartId, vreg, mask, data)) throw new Exception(Frontend.getLastErrorMessage(handle))
+  override def writeVs(hartId: Int, value: Int): Unit = if(!Frontend.writeVs(handle, hartId, value)) throw new Exception(Frontend.getLastErrorMessage(handle))
+  override def setPolicy(hartId: Int, policy: String): Unit = if(!Frontend.setPolicy(handle, hartId, policy)) throw new Exception(Frontend.getLastErrorMessage(handle))
   override def time(value: Long): Unit = Frontend.time(handle, value)
 
 }

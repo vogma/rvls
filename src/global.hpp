@@ -80,11 +80,11 @@ class Context;
 
 std::string appendFailureContext(Context& context, int hartId, std::string message);
 
-static void failure(Context& context, int hartId, std::string message){
+[[noreturn]] static void failure(Context& context, int hartId, std::string message){
 	throw std::runtime_error(appendFailureContext(context, hartId, message));
 }
 
-static void failure(Context& context, int hartId, const char* formatString, ...){
+[[noreturn]] static void failure(Context& context, int hartId, const char* formatString, ...){
     std::va_list args{};
     va_start(args, formatString);
     std::string message = myvsprintf(formatString, args);

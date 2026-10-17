@@ -53,7 +53,7 @@ Memory::Memory(){
 
 Memory::~Memory(){
     for(u32 i = 0;i < (1 << 20);i++) if(mem[i]) delete [] mem[i];
-    delete mem;
+    delete [] mem;
 }
 
 u8* Memory::get(u64 address){

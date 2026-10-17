@@ -20,6 +20,7 @@ INCLUDE += -I$(realpath ${SPIKE}/riscv)
 INCLUDE += -I$(realpath ${SPIKE}/fesvr)
 INCLUDE += -I$(realpath ${SPIKE}/softfloat)
 INCLUDE += -I$(realpath ${SPIKE_BUILD})
+INCLUDE += -I$(CURDIR)/src
 
 
 JNI_INCLUDE ?= $(dir $(shell readlink -f $(shell which javac)))../include
@@ -43,7 +44,18 @@ OBJECTS  := $(SRC:%.cpp=$(OBJ_DIR)/%.o)
 DEPENDENCIES \
          := $(OBJECTS:.o=.d)
 
+# Trace generator: runs its own Spike, without Hart or the vector checker.
+TRACEGEN_OBJECTS := $(OBJ_DIR)/apps/tracegen.o $(OBJ_DIR)/src/memory.o \
+                    $(OBJ_DIR)/src/elf.o $(OBJ_DIR)/src/vshape.o
+DEPENDENCIES += $(TRACEGEN_OBJECTS:.o=.d)
+
 all: build $(APP_DIR)/$(TARGET)
+
+tracegen: $(APP_DIR)/tracegen
+
+$(APP_DIR)/tracegen: $(TRACEGEN_OBJECTS)
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $(LIBRARIES)
 
 $(OBJ_DIR)/%.o: %.cpp
 	@mkdir -p $(@D)
@@ -61,7 +73,7 @@ $(APP_DIR)/$(TARGET): $(APP_DIR)/$(TARGET).so
 
 -include $(DEPENDENCIES)
 
-.PHONY: all build clean debug release info
+.PHONY: all build clean debug release info tracegen
 
 build:
 	@mkdir -p $(APP_DIR)

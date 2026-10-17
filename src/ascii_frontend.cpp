@@ -3,8 +3,9 @@
 
 using namespace std;
 
+// Hex token, most significant byte first, at most 64 bytes.
 static vector<u8> parseBytes(const string &token, size_t size){
-    if(size > 16 || token.size() != size*2) throw runtime_error("Bad data size");
+    if(size > 64 || token.size() != size*2) throw runtime_error("Bad data size");
     vector<u8> data(size);
     for(size_t i = 0; i < size; ++i){
         const char *start = token.data() + token.size() - (i+1)*2;
@@ -14,6 +15,20 @@ static vector<u8> parseBytes(const string &token, size_t size){
         data[i] = value;
     }
     return data;
+}
+
+// Hex bit mask, bit i enabling byte i; returns one 0/1 entry per byte.
+static vector<u8> parseMask(const string &token, size_t size){
+    if(token.size() != (size + 3) / 4) throw runtime_error("Bad mask size");
+    vector<u8> enable(size);
+    for(size_t i = 0; i < size; ++i){
+        char c = token[token.size() - 1 - i / 4];
+        unsigned nibble;
+        auto [end, error] = from_chars(&c, &c + 1, nibble, 16);
+        if(error != errc()) throw runtime_error("Bad mask value");
+        enable[i] = (nibble >> (i % 4)) & 1;
+    }
+    return enable;
 }
 
 void checkFile(std::ifstream &lines, RvlsConfig &config){
@@ -33,6 +48,7 @@ void checkFile(std::ifstream &lines, RvlsConfig &config){
             istringstream f(line);
             string str;
             f >> str;
+            if(str.empty() || str[0] == '#') { ++lineId; continue; }
             if(str == "rv"){
                 f >> str;
                 if (str == "commit") {
@@ -40,6 +56,28 @@ void checkFile(std::ifstream &lines, RvlsConfig &config){
                     u64 pc;
                     f >> hartId >> hex >> pc >> dec;
                     rv->commit(pc);
+                } else if (str == "vrf") {
+                    f >> str;
+                    if(str == "w") {
+                        u32 hartId, vreg;
+                        string maskToken, dataToken;
+                        f >> hartId >> vreg >> maskToken >> dataToken;
+                        size_t size = dataToken.size() / 2;
+                        rv->writeVrf(vreg, parseMask(maskToken, size), parseBytes(dataToken, size));
+                    } else {
+                        throw runtime_error(line);
+                    }
+                } else if (str == "vs") {
+                    u32 hartId;
+                    u64 value;
+                    f >> hartId >> value;
+                    rv->writeVs(value);
+                } else if (str == "policy") {
+                    u32 hartId;
+                    f >> hartId;
+                    string rest;
+                    getline(f, rest);
+                    rv->setPolicy(rest);
                 } else if (str == "rf") {
                     f >> str;
                     if(str == "w") {
@@ -86,7 +124,13 @@ void checkFile(std::ifstream &lines, RvlsConfig &config){
                         string dataToken;
                         f >> hartId >> sqId >> len >> hex >> address >> dataToken >> dec;
                         auto data = parseBytes(dataToken, len);
-                        rv->memory->storeExecute(sqId, address, len, data.data());
+                        string maskToken;
+                        if(f >> maskToken) {
+                            auto enable = parseMask(maskToken, len);
+                            rv->memory->storeExecute(sqId, address, len, data.data(), enable.data());
+                        } else {
+                            rv->memory->storeExecute(sqId, address, len, data.data());
+                        }
                     } else if(str == "com") {
                         u32 hartId, sqId;
                         f >> hartId >> sqId;
@@ -114,8 +158,13 @@ void checkFile(std::ifstream &lines, RvlsConfig &config){
                 } else if (str == "trap") {
                     u32 hartId, code;
                     bool interrupt;
+                    u64 epc, tval;
                     f >> hartId >> interrupt >> code;
-                    rv->trap(interrupt, code);
+                    if(f >> hex >> epc >> tval) {
+                        rv->trap(interrupt, code, true, epc, tval);
+                    } else {
+                        rv->trap(interrupt, code);
+                    }
                 } else if (str == "int") {
                     f >> str;
                     if(str == "set") {

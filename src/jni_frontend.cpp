@@ -44,11 +44,27 @@ jmethodID methodId;
 static std::vector<u8> readJniBytes(JNIEnv *env, jbyteArray array, size_t expected){
     if(array == nullptr) throw std::runtime_error("Null RVLS data byte array");
     const jsize size = env->GetArrayLength(array);
-    if(expected > 16 || size != static_cast<jsize>(expected)) throw std::runtime_error("Bad RVLS data byte array length");
+    if(expected > CpuMemoryView::MAX_ACCESS_BYTES || size != static_cast<jsize>(expected)) throw std::runtime_error("Bad RVLS data byte array length");
 
     std::vector<u8> data(size);
     env->GetByteArrayRegion(array, 0, size, reinterpret_cast<jbyte *>(data.data()));
     return data;
+}
+
+// Packed byte-enable mask to one 0/1 entry per byte.
+static std::vector<u8> readJniMask(JNIEnv *env, jbyteArray array, size_t size){
+    if(array == nullptr) throw std::runtime_error("Null RVLS mask byte array");
+    const jsize length = env->GetArrayLength(array);
+    if(length != static_cast<jsize>((size + 7) / 8)) throw std::runtime_error("Bad RVLS mask byte array length");
+    std::vector<u8> packed(length);
+    env->GetByteArrayRegion(array, 0, length, reinterpret_cast<jbyte *>(packed.data()));
+    std::vector<u8> enable(size);
+    for(size_t i = 0; i < size_t(length) * 8; ++i){
+        u8 bit = (packed[i / 8] >> (i % 8)) & 1;
+        if(i < size) enable[i] = bit;
+        else if(bit) throw std::runtime_error("RVLS mask enables a byte past the data");
+    }
+    return enable;
 }
 
 string toString(JNIEnv *env, jstring jstr){
@@ -184,6 +200,48 @@ rvlsJniBool(trap), int hartId, jboolean interrupt, int code) {
 	return true;
 }
 
+// Synchronous trap with xepc/xtval (required for vector instructions).
+rvlsJniBool(trapWithFields), int hartId, jboolean interrupt, int code, long epc, long tval) {
+	try{
+		rv->trap(interrupt, code, true, epc, tval);
+	} catch (const std::exception &e) {
+		c->lastErrorMessage = e.what();
+	    return false;
+	}
+	return true;
+}
+
+// Vector state events.
+rvlsJniBool(writeVrf), int hartId, int vreg, jbyteArray mask, jbyteArray data) {
+	try{
+		if(data == nullptr) throw std::runtime_error("Null RVLS data byte array");
+		auto bytes = readJniBytes(env, data, env->GetArrayLength(data));
+		rv->writeVrf(vreg, readJniMask(env, mask, bytes.size()), bytes);
+	} catch (const std::exception &e) {
+		c->lastErrorMessage = e.what();
+	    return false;
+	}
+	return true;
+}
+rvlsJniBool(writeVs), int hartId, int value) {
+	try{
+		rv->writeVs(value);
+	} catch (const std::exception &e) {
+		c->lastErrorMessage = e.what();
+	    return false;
+	}
+	return true;
+}
+rvlsJniBool(setPolicy), int hartId, jstring policy) {
+	try{
+		rv->setPolicy(toString(env, policy));
+	} catch (const std::exception &e) {
+		c->lastErrorMessage = e.what();
+	    return false;
+	}
+	return true;
+}
+
 rvlsJniString(getLastErrorMessage)) {
 	std::string str = c->lastErrorMessage;
 	jstring result = env->NewStringUTF(str.c_str());
@@ -250,6 +308,17 @@ rvlsJniBool(storeExecute), int hartId, long id, long addr, long len, jbyteArray 
 	try{
 		auto bytes = readJniBytes(env, data, len);
         rv->memory->storeExecute(id, addr, len, bytes.data());
+	} catch (const std::exception &e) {
+		c->lastErrorMessage = e.what();
+	    return false;
+	}
+	return true;
+}
+rvlsJniBool(storeExecuteMasked), int hartId, long id, long addr, long len, jbyteArray data, jbyteArray mask){
+	try{
+		auto bytes = readJniBytes(env, data, len);
+		auto enable = readJniMask(env, mask, len);
+        rv->memory->storeExecute(id, addr, len, bytes.data(), enable.data());
 	} catch (const std::exception &e) {
 		c->lastErrorMessage = e.what();
 	    return false;

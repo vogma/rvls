@@ -24,6 +24,11 @@ public class Frontend  {
     public static native void readRf(long handle, int hardId, int rfKind, int address, byte[] data);
     public static native boolean commit(long handle, int hartId, long pc);
     public static native boolean trap(long handle, int hartId, boolean interrupt, int code);
+    public static native boolean trapWithFields(long handle, int hartId, boolean interrupt, int code, long epc, long tval);
+    // Vector events. Masks are packed little endian: bit i enables byte i.
+    public static native boolean writeVrf(long handle, int hartId, int vreg, byte[] mask, byte[] data);
+    public static native boolean writeVs(long handle, int hartId, int value);
+    public static native boolean setPolicy(long handle, int hartId, String policy);
     public static native String getLastErrorMessage(long handle);
     public static native void ioAccess(long handle, int hartId, boolean write, long address, byte[] data, int mask, int size, boolean error);
     public static native void setInterrupt(long handle, int hartId, int intId, boolean value);
@@ -32,6 +37,7 @@ public class Frontend  {
     public static native boolean loadCommit(long handle, int hartId, long id);
     public static native boolean loadFlush(long handle, int hartId);
     public static native boolean storeExecute(long handle, int hartId, long id, long addr, long len, byte[] data);
+    public static native boolean storeExecuteMasked(long handle, int hartId, long id, long addr, long len, byte[] data, byte[] mask);
     public static native boolean storeCommit(long handle, int hartId, long id);
     public static native boolean storeBroadcast(long handle, int hartId, long id);
     public static native boolean storeConditional(long handle, int hartId, boolean failure);

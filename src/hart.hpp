@@ -25,6 +25,7 @@
 #include "mmu.h"
 #include "simif.h"
 #include "coherency.hpp"
+#include "vector.hpp"
 
 
 using namespace std;
@@ -59,6 +60,7 @@ public:
     vector<Region> regions;
     cfg_t cfg;
     map<size_t, processor_t*> harts;
+    VectorChecker *vec = nullptr; // set when the hart has a vector extension
 
     SpikeIf(CpuMemoryView *memory, u32 hartId);
 
@@ -110,6 +112,9 @@ public:
 
     u64 interruptPending = 0;
 
+    // RVV checking; null without a vector extension.
+    std::unique_ptr<VectorChecker> vec;
+
     Hart(Context& context, u32 hartId, string isa, string priv, u32 physWidth, u32 pmpNum, u32 triggerCount, u32 asidWidth, CpuMemoryView *memory, FILE *logs);
     Hart(const Hart&) = delete;
     Hart(Hart&&) = delete;
@@ -120,7 +125,11 @@ public:
     void writeRf(u32 rfKind, u32 address, std::span<const u8> data);
     void readRf(u32 rfKind, u32 address, std::span<const u8> data);
     void physExtends(u64 &v);
-    void trap(bool interrupt, u32 code);
+    void trap(bool interrupt, u32 code, bool hasFields = false, u64 epc = 0, u64 tval = 0);
+    void writeVrf(u32 vreg, std::span<const u8> enable, std::span<const u8> data);
+    void writeVs(u64 value);
+    void setPolicy(const std::string &keyValues);
+    void checkIoQueueEmpty();
     void commit(u64 pc);
     void ioAccess(TraceIo io);
     void setInt(u32 id, bool value);

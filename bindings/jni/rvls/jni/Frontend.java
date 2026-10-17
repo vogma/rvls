@@ -42,6 +42,7 @@ public class Frontend  {
     public static native boolean storeBroadcast(long handle, int hartId, long id);
     public static native boolean storeConditional(long handle, int hartId, boolean failure);
     public static native void time(long handle, long value);
+    public static native boolean finish(long handle);
     public static native void flush(long handle);
     public static native void close(long handle);
 

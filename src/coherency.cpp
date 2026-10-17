@@ -189,6 +189,14 @@ void CpuMemoryView::releasePending(){
     pendingStoreCursor = 0;
 }
 
+void CpuMemoryView::checkBroadcastsCommitted(const char *where){
+    for(auto &[id, store] : liveStores){
+        if(store->broadcasted && !store->commited)
+            failure(context, hartId, "STORE BROADCAST WITHOUT COMMIT: store id %lu at 0x%lx (%zu bytes) was not committed %s\n",
+                    id, store->addr, store->len, where);
+    }
+}
+
 bool CpuMemoryView::vectorLoad(u64 address, u32 length, u8 *data){
     bool all = true;
     for(u32 i = 0; i < length; i++){

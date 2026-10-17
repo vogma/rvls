@@ -343,6 +343,15 @@ rvlsJniBool(storeBroadcast), int hartId, long id){
 	}
 	return true;
 }
+rvlsJniBool(finish)){
+	try{
+        c->finish();
+	} catch (const std::exception &e) {
+		c->lastErrorMessage = e.what();
+	    return false;
+	}
+	return true;
+}
 rvlsJniBool(storeConditional), int hartId, jboolean failure){
     try{
         rv->scStatus(failure);

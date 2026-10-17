@@ -84,6 +84,7 @@ trait TraceBackend{
 
   def time(value : Long) : Unit
 
+  def finish() : Unit = {} //End of a passing run: fails on accesses that were never checked
   def flush() : Unit
   def close() : Unit
 }
@@ -282,5 +283,6 @@ class RvlsBackend(workspace : File = new File(".")) extends TraceBackend{
   override def writeVs(hartId: Int, value: Int): Unit = if(!Frontend.writeVs(handle, hartId, value)) throw new Exception(Frontend.getLastErrorMessage(handle))
   override def setPolicy(hartId: Int, policy: String): Unit = if(!Frontend.setPolicy(handle, hartId, policy)) throw new Exception(Frontend.getLastErrorMessage(handle))
   override def time(value: Long): Unit = Frontend.time(handle, value)
+  override def finish(): Unit = if(!Frontend.finish(handle)) throw new Exception(Frontend.getLastErrorMessage(handle))
 
 }

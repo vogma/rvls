@@ -109,6 +109,12 @@ bool SpikeIf::isMem(u64 address){
     return r != NULL && r->type == RegionType::mem;
 }
 
+bool SpikeIf::isMemRange(u64 address, u64 len){
+    if(len == 0 || address + len - 1 < address) return false;
+    for(u64 i = 0; i < len; i++) if(!isMem(address + i)) return false;
+    return true;
+}
+
 bool SpikeIf::isIo(u64 address){
     auto r = getRegion(address);
     return r != NULL && r->type == RegionType::io;
@@ -168,6 +174,7 @@ bool SpikeIf::mmio_load(reg_t addr, size_t len, u8* bytes)  {
         assertEq(memory->context, hartId, "mmio write\n", dut.write, false);
         assertEq(memory->context, hartId, "mmio address\n", dut.address, addr);
         assertEq(memory->context, hartId, "mmio len\n", dut.size, len);
+        checkVectorIoMask(dut, len);
         memcpy(bytes, dut.data.data(), len);
         ioQueue.pop();
         return !dut.error;
@@ -192,6 +199,7 @@ bool SpikeIf::mmio_store(reg_t addr, size_t len, const u8* bytes)  {
         assertEq(memory->context, hartId, "mmio write\n", dut.write, true);
         assertEq(memory->context, hartId, "mmio address\n", dut.address, addr);
         assertEq(memory->context, hartId, "mmio len\n", dut.size, len);
+        checkVectorIoMask(dut, len);
         assertTrue(memory->context, hartId, "mmio data\n", !memcmp(dut.data.data(), bytes, len));
         ioQueue.pop();
         return !dut.error;
@@ -199,6 +207,14 @@ bool SpikeIf::mmio_store(reg_t addr, size_t len, const u8* bytes)  {
 
     return false;
 }
+
+// Vector IO accesses enable the whole element; scalar IO masks are not checked.
+void SpikeIf::checkVectorIoMask(const TraceIo &dut, size_t len){
+    if(!vec || !vec->routesMemory()) return;
+    u32 full = len >= 32 ? ~0u : (1u << len) - 1;
+    assertEq(memory->context, hartId, "mmio mask\n", dut.mask, full);
+}
+
 // Callback for processors to let the simulation know they were reset.
 void SpikeIf::proc_reset(unsigned id)  {
 //        printf("proc_reset %d\n", id);
@@ -501,6 +517,7 @@ void Hart::physExtends(u64 &v){
 void Hart::trap(bool interrupt, u32 code, bool hasFields, u64 epc, u64 tval){
     int mask = 1 << code;
     auto fromPc = state->pc;
+    memory->checkBroadcastsCommitted("before a trap");
     if(vec) vec->beforeStep(true);
     if(interrupt) state->mip->write_with_mask(mask, mask);
     proc->step(1);

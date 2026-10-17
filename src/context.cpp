@@ -32,6 +32,12 @@ void Context::rvNew(u32 hartId, std::string isa, std::string priv, u32 physWidth
     if(config.spikeLogCommit) hart.proc->enable_log_commits();
 }
 
+void Context::finish(){
+    for(auto& [id, view]: cpuMemoryViews){
+        view.checkBroadcastsCommitted("by the end of the run");
+    }
+}
+
 void Context::close(){
     for(auto& [hartId, hart]: harts){
         hart.close();

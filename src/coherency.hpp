@@ -104,4 +104,6 @@ public:
     // Ends a vector instruction: releases all its accesses.
     void releasePending();
     void reportIdReuse(const char *kind, u64 id);
+    // A store broadcast before its commit must still be committed.
+    void checkBroadcastsCommitted(const char *where);
 };

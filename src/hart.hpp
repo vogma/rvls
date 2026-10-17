@@ -75,7 +75,10 @@ public:
     virtual const map<size_t, processor_t*>& get_harts() const;
     virtual const char* get_symbol(uint64_t addr);
     bool isMem(u64 address);
+    // Every byte of [address, address + len) is idempotent memory.
+    bool isMemRange(u64 address, u64 len);
     bool isIo(u64 address);
+    void checkVectorIoMask(const TraceIo &dut, size_t len);
     bool isFetchable(u64 address);
     Region* getRegion(u64 address);
 };

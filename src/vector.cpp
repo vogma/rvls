@@ -308,7 +308,7 @@ void VectorChecker::checkMemory(bool trap, const VecCsrs &post){
         fail("VECTOR LOAD MISSING", format("element {} at 0x{:x} ({} bytes) is not covered by a DUT load", m.elem, m.addr, m.len));
     }
     for(auto &l : mem->pendingLoads){
-        if(!hart.sif->isMem(l->addr) || !hart.sif->isMem(l->addr + l->len - 1))
+        if(!hart.sif->isMemRange(l->addr, l->len))
             fail("VECTOR LOAD NOT IN MEMORY", format("DUT load at 0x{:x} ({} bytes) is outside the idempotent memory regions", l->addr, l->len));
         if(!l->used) extraLoadBytes += l->len;
     }

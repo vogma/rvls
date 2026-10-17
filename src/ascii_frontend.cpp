@@ -282,6 +282,8 @@ void checkFile(std::ifstream &lines, RvlsConfig &config){
             }
             lineId += 1;
         }
+        line = "<end of trace>";
+        context.finish();
     } catch (const std::exception &e) {
         printf("Failed at line %ld : %s\n", lineId, line.c_str());
         printf("- %s\n", e.what());

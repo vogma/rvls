@@ -144,10 +144,13 @@ object TraceReplay {
       var line = 0
       try {
         events.foreach { case (l, e) => line = l; e.drive(backend) }
+        line = -1
+        backend.finish()
         println("JNI PASS")
       } catch {
         case e: Exception =>
-          println(s"JNI FAIL line $line: ${e.getMessage}")
+          val at = if (line < 0) "end of trace" else s"line $line"
+          println(s"JNI FAIL $at: ${e.getMessage}")
           sys.exit(1)
       }
     case _ =>

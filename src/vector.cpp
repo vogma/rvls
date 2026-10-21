@@ -471,10 +471,27 @@ void VectorChecker::afterStep(bool trap, bool interrupt, u32 code){
     auto *mem = hart.memory;
     try {
         VecCsrs post = readSpikeCsrs();
+        // The pinned FF loop does not write vstart before a debug data trigger.
+        bool ffWatchpoint = trap && !interrupt && code == 3 && executed && cur.ff;
+        if(ffWatchpoint){
+            u64 addr = trunc((state->prv == PRV_M ? state->mtval : state->stval)->read());
+            u64 offset = trunc(addr - vpre.xrs1);
+            u64 stride = cur.nf * cur.eewEnc / 8;
+            u64 index = offset / stride;
+            if(index < pre.vstart || index >= pre.vl || offset % (cur.eewEnc / 8)
+               || (!cur.vm && !(preVrf[index / 8] & (1u << (index % 8)))))
+                fail("FF WATCHPOINT ADDRESS", "breakpoint address is outside the active load elements");
+            post.vstart = index;
+            post.vs = 3;
+        }
         checkExplicitCsr(trap);
         checkCsrs(post);
         if(executed && cur.isVectorMem()) checkMemory(trap && !interrupt, post);
         checkVrf(trap && !interrupt, code, post);
+        if(ffWatchpoint && policy.sync){
+            proc->VU.vstart->write_raw(post.vstart);
+            state->sstatus->dirty(SSTATUS_VS);
+        }
     } catch(...) {
         resetEvents();
         throw;

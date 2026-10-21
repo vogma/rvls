@@ -61,6 +61,7 @@ public:
     cfg_t cfg;
     map<size_t, processor_t*> harts;
     VectorChecker *vec = nullptr; // set when the hart has a vector extension
+    bool stopAtTrapFetch = false;
 
     SpikeIf(CpuMemoryView *memory, u32 hartId);
 

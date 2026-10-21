@@ -11,6 +11,8 @@
 
 #include <format>
 
+struct StopAtTrapFetch {};
+
 static bool isHpmCounterCsr(u32 csr){
     return (csr >= CSR_MHPMCOUNTER3 && csr <= CSR_MHPMCOUNTER31) ||
            (csr >= CSR_HPMCOUNTER3 && csr <= CSR_HPMCOUNTER31) ||
@@ -139,6 +141,7 @@ bool SpikeIf::reservable(reg_t addr)  {
 
 // used for MMIO addresses
 bool SpikeIf::mmio_fetch(reg_t addr, size_t len, u8* bytes)  {
+    if(stopAtTrapFetch && harts.at(hartId)->get_state()->trap_happened) throw StopAtTrapFetch();
     if(isFetchable(addr)) {
         memory->fetch(addr, len, bytes);
         return true;
@@ -520,7 +523,17 @@ void Hart::trap(bool interrupt, u32 code, bool hasFields, u64 epc, u64 tval){
     memory->checkBroadcastsCommitted("before a trap");
     if(vec) vec->beforeStep(true);
     if(interrupt) state->mip->write_with_mask(mask, mask);
-    proc->step(1);
+    // Spike continues into the handler after a trigger; stop before its first fetch.
+    sif->stopAtTrapFetch = !interrupt && code == 3;
+    if(sif->stopAtTrapFetch) proc->get_mmu()->flush_icache();
+    try {
+        proc->step(1);
+    } catch(const StopAtTrapFetch&) {
+    } catch(...) {
+        sif->stopAtTrapFetch = false;
+        throw;
+    }
+    sif->stopAtTrapFetch = false;
     if(interrupt) state->mip->write_with_mask(mask, 0);
     if(!state->trap_happened){
         failure(context, hartId, "DUT did trap on %lx\n", fromPc);

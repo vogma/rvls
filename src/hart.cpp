@@ -160,7 +160,7 @@ bool SpikeIf::mmio_mmu(reg_t addr, size_t len, u8* bytes)  {
 
 bool SpikeIf::mmio_load(reg_t addr, size_t len, u8* bytes)  {
     if(vec && vec->routesMemory()) {
-        if(vec->injectsFault(addr)) return false;
+        if(vec->injectsFault(addr, len, false)) return false;
         if(isMem(addr)) {
             vec->spikeLoad(addr, len, bytes);
             return true;
@@ -186,9 +186,12 @@ bool SpikeIf::mmio_load(reg_t addr, size_t len, u8* bytes)  {
     return false;
 }
 bool SpikeIf::mmio_store(reg_t addr, size_t len, const u8* bytes)  {
-    if(vec && vec->routesMemory() && isMem(addr)) {
-        vec->spikeStore(addr, len, bytes);
-        return true;
+    if(vec && vec->routesMemory()) {
+        if(vec->injectsFault(addr, len, true)) return false;
+        if(isMem(addr)) {
+            vec->spikeStore(addr, len, bytes);
+            return true;
+        }
     }
     if(isMem(addr)) {
         memory->store(addr, len, (u8*) bytes);
@@ -521,7 +524,7 @@ void Hart::trap(bool interrupt, u32 code, bool hasFields, u64 epc, u64 tval){
     int mask = 1 << code;
     auto fromPc = state->pc;
     memory->checkBroadcastsCommitted("before a trap");
-    if(vec) vec->beforeStep(true);
+    if(vec) vec->beforeStep(true, interrupt ? -1 : int(code));
     if(interrupt) state->mip->write_with_mask(mask, mask);
     // Spike continues into the handler after a trigger; stop before its first fetch.
     sif->stopAtTrapFetch = !interrupt && code == 3;

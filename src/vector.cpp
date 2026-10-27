@@ -104,10 +104,11 @@ void VectorChecker::resetEvents(){
 
 //---------------------------------------------------------------- step hooks
 
-void VectorChecker::beforeStep(bool trapStep){
+void VectorChecker::beforeStep(bool trapStep, int cause){
     auto &VU = proc->VU;
     stepActive = true;
     this->trapStep = trapStep;
+    trapCause = cause;
     decoded = false;
     executed = false;
     cur = VInsn();
@@ -166,10 +167,17 @@ u64 VectorChecker::currentElement(u64 addr) const {
     return proc->VU.vstart->read();
 }
 
-bool VectorChecker::injectsFault(u64 addr){
-    // Without sync, Spike keeps its own vl.
-    if(!routesMemory() || !cur.ff || trapStep || !policy.ffTrimAny || !policy.sync) return false;
+bool VectorChecker::injectsFault(u64 addr, u32 len, bool store){
+    if(!routesMemory()) return false;
     auto it = evImplicit.find(CSR_VL);
+    // Wide IO element on RV32: Spike faults where the DUT reported the access fault
+    // (or the trim); cause, tval, vstart, vl, the prefix and the IO FIFO are checked after.
+    if(policy.ioWideFault && policy.sync && xlen == 32 && len > 4 && hart.sif->isIo(addr)){
+        if(trapStep && trapCause == (store ? 7 : 5)) return true;
+        if(!trapStep && cur.ff && it != evImplicit.end() && it->second < pre.vl && currentElement(addr) == it->second) return true;
+    }
+    // Without sync, Spike keeps its own vl.
+    if(store || !cur.ff || trapStep || !policy.ffTrimAny || !policy.sync) return false;
     if(it == evImplicit.end() || it->second >= pre.vl) return false;
     // Trim to vl = 0 is illegal (norm:vector_ff_no_exception): checkCsrs reports it.
     if(it->second == 0) return false;

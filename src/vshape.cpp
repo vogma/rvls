@@ -20,6 +20,7 @@ void VecPolicy::set(const string &key, const string &value){
     else if(key == "ffTrimAny") ffTrimAny = v;
     else if(key == "loadPastTrapAny") loadPastTrapAny = v;
     else if(key == "segPartialNone") segPartialNone = v;
+    else if(key == "ioWideFault") ioWideFault = v;
     else if(key == "sync") sync = v;
     else throw runtime_error("Unknown policy key " + key);
 }
@@ -27,7 +28,7 @@ void VecPolicy::set(const string &key, const string &value){
 string VecPolicy::describe() const {
     stringstream ss;
     ss << "agnostic=" << agnostic << " ffTrimAny=" << ffTrimAny << " loadPastTrapAny=" << loadPastTrapAny
-       << " segPartialNone=" << segPartialNone << " sync=" << sync;
+       << " segPartialNone=" << segPartialNone << " ioWideFault=" << ioWideFault << " sync=" << sync;
     return ss.str();
 }
 

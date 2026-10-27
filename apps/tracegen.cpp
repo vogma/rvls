@@ -63,6 +63,8 @@ public:
     u64 base = 0;
     optional<u64> trim;
     u64 injected = 0;
+    bool ioWide = false;
+    u64 ioInjected = 0;
 
     GeneratorSim() { debug_mmu = nullptr; }
     const Region *region(u64 addr, size_t len) const {
@@ -74,6 +76,13 @@ public:
     u64 element(u64 addr) const {
         if(current.ff) return (addr - base) / (current.nf * current.eewEnc / 8);
         return current.isVectorMem() ? proc->VU.vstart->read() : 0;
+    }
+    // A vector IO element wider than 4 bytes takes an access fault (fault-only-first trims).
+    bool wideIoFault(u64 addr, size_t len) {
+        auto r = region(addr, len);
+        if(!ioWide || !current.isVectorMem() || len <= 4 || !r || !r->io) return false;
+        ++ioInjected;
+        return true;
     }
     char *addr_to_mem(reg_t) override { return nullptr; }
     bool reservable(reg_t addr) override { auto r = region(addr, 1); return r && !r->io; }
@@ -89,6 +98,7 @@ public:
     bool mmio_load(reg_t addr, size_t len, u8 *bytes) override {
         // Inject before touching IO or memory: trim has no access at/past n.
         if(current.ff && trim && element(addr) >= *trim) { ++injected; return false; }
+        if(wideIoFault(addr, len)) return false;
         auto r = region(addr, len);
         if(!r) return false;
         memory.read(addr, len, bytes);
@@ -96,6 +106,7 @@ public:
         return true;
     }
     bool mmio_store(reg_t addr, size_t len, const u8 *bytes) override {
+        if(wideIoFault(addr, len)) return false;
         auto r = region(addr, len);
         if(!r) return false;
         vector<u8> old(len);
@@ -304,7 +315,7 @@ int generate(int argc, char **argv) {
     vector<string> trimRules;
     unsigned beat = 0;
     u64 maxInstructions = 200000;
-    bool spurious = false;
+    bool spurious = false, ioWide = false;
     CLI::App app{"Generate DUT-format ASCII traces using an independent pinned Spike (RV32/RV64, Zve32x/Zve64x)"};
     app.add_option("--elf", elfPath)->required();
     app.add_option("--regions", regionPath)->required();
@@ -317,6 +328,7 @@ int generate(int argc, char **argv) {
     app.add_option("--policy", policy, "spike or agnostic-ones")->check(CLI::IsMember({"spike", "agnostic-ones"}));
     app.add_option("--ff-trim", trimRules, "Repeatable SYMBOL:N; trim a labelled fault-only-first instruction before element N");
     app.add_flag("--ff-spurious", spurious, "Write a legal non-memory pattern into active trimmed-away FF elements");
+    app.add_flag("--io-wide-fault", ioWide, "RV32: vector IO elements wider than 4 bytes take an access fault");
     app.add_option("--seg-partial", segPolicy, "spike or none (RAM only)")->check(CLI::IsMember({"spike", "none"}));
     CLI11_PARSE(app, argc, argv);
     if(beat > 64 || (beat && (beat & (beat - 1)))) throw runtime_error("Invalid beat size");
@@ -334,7 +346,9 @@ int generate(int argc, char **argv) {
     unsigned xlen = elf.reader.get_class() == ELFCLASS64 ? 64 : 32;
     u64 xmask = xlen == 32 ? 0xffffffffull : ~0ull;
     if(resetPc > xmask || resetPc & 1) throw runtime_error("Invalid reset PC");
+    if(ioWide && xlen != 32) throw runtime_error("--io-wide-fault requires RV32");
     GeneratorSim sim;
+    sim.ioWide = ioWide;
     readRegions(regionPath, sim, xmask);
     auto symbols = readSymbols(elf, sim);
     if(!symbols.count("pass") || !symbols.count("fail")) throw runtime_error("ELF needs pass and fail symbols");
@@ -378,6 +392,7 @@ int generate(int argc, char **argv) {
     VecPolicy accept;
     accept.agnostic = policy == "agnostic-ones";
     accept.ffTrimAny = !trims.empty(); accept.segPartialNone = segPolicy == "none";
+    accept.ioWideFault = ioWide;
     out << "rv policy 0 " << accept.describe() << "\n";
     for(const auto &r : sim.regions) out << format("rv region add 0 {} {:x} {:x}\n", r.io ? 1 : 0, r.base, r.size);
     out << "elf load 0 " << elfPath << "\nrv set pc 0 " << format("{:x}", resetPc) << "\n";
@@ -420,12 +435,13 @@ int generate(int argc, char **argv) {
     }
     if((state->pc & xmask) != symbols.at("pass")) throw runtime_error("Instruction limit reached before pass");
     if(usedTrims.size() != trims.size()) throw runtime_error("An FF trim rule was never executed");
-    out << format("# PASS instructions={} traps={} legal-element-edits={} ff-injections={}\n", count, traps, edits, sim.injected);
+    string io = ioWide ? format(" io-injections={}", sim.ioInjected) : "";
+    out << format("# PASS instructions={} traps={} legal-element-edits={} ff-injections={}{}\n", count, traps, edits, sim.injected, io);
     out.flush();
     if(!out) throw runtime_error("Failed writing trace");
     out.close();
     filesystem::rename(temporary, output);
-    cout << format("PASS {}: instructions={} traps={} legal-element-edits={} ff-injections={}\n", output, count, traps, edits, sim.injected);
+    cout << format("PASS {}: instructions={} traps={} legal-element-edits={} ff-injections={}{}\n", output, count, traps, edits, sim.injected, io);
     return 0;
 }
 } // namespace

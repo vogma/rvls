@@ -56,15 +56,15 @@ public:
     void explicitCsrWrite(u32 address, u64 value);
     void setPolicy(const std::string &keyValues);
 
-    // Called by Hart around proc->step(1).
-    void beforeStep(bool trapStep);
+    // Called by Hart around proc->step(1); cause is the DUT's synchronous trap cause, else -1.
+    void beforeStep(bool trapStep, int cause = -1);
     void afterStep(bool trap, bool interrupt, u32 code);
     // After afterStep: the stepped instruction was a vector instruction.
     bool lastWasVector() const { return executed && (cur.vector || cur.vset); }
     // During a vector load/store step, Spike's memory callbacks come here.
     bool routesMemory();
-    // Fault-only-first trimming: true makes Spike take an access fault.
-    bool injectsFault(u64 addr);
+    // Fault-only-first trimming and wide IO faults: true makes Spike take an access fault.
+    bool injectsFault(u64 addr, u32 len, bool store);
     void spikeLoad(u64 addr, u32 len, u8 *bytes);
     void spikeStore(u64 addr, u32 len, const u8 *bytes);
 
@@ -78,6 +78,7 @@ private:
     reg_t preXpr[32];
     u64 prePc = 0;
     bool stepActive = false, trapStep = false;
+    int trapCause = -1;
     bool decoded = false, executed = false;
     VInsn cur;
     std::string curText;

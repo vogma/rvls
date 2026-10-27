@@ -24,6 +24,9 @@ struct VecPolicy {
     // Faulting segment (norm:vector_ls_seg_partial_access): false = the fields
     // before the faulting field are accessed, as Spike does; true = none.
     bool segPartialNone = false;
+    // RV32: an IO element wider than 4 bytes may take an access fault instead
+    // of its access (norm:pma_io_rwx_per_sz); a fault-only-first load trims there.
+    bool ioWideFault = false;
     // Validate-then-sync.  Disabled only for control runs, which must fail.
     bool sync = true;
 

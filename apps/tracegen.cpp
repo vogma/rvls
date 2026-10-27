@@ -151,7 +151,7 @@ map<string, u64> readSymbols(Elf &elf, GeneratorSim &sim) {
     return result;
 }
 
-void readRegions(const string &path, GeneratorSim &sim) {
+void readRegions(const string &path, GeneratorSim &sim, u64 limit) {
     ifstream in(path);
     if(!in) throw runtime_error("Cannot open region file " + path);
     string line;
@@ -163,8 +163,8 @@ void readRegions(const string &path, GeneratorSim &sim) {
         if(!(f >> base >> size) || (f >> extra) || (kind != "mem" && kind != "io"))
             throw runtime_error("Bad region: " + line);
         Region r{kind == "io", number(base), number(size)};
-        if(!r.size || r.base > UINT32_MAX || r.size - 1 > UINT32_MAX - r.base)
-            throw runtime_error("Regions must fit the RV32 address space");
+        if(!r.size || r.base > limit || r.size - 1 > limit - r.base)
+            throw runtime_error("Regions must fit the address space");
         for(const auto &old : sim.regions)
             if(r.base < old.base + old.size && old.base < r.base + r.size)
                 throw runtime_error("Overlapping regions");
@@ -305,7 +305,7 @@ int generate(int argc, char **argv) {
     unsigned beat = 0;
     u64 maxInstructions = 200000;
     bool spurious = false;
-    CLI::App app{"Generate DUT-format ASCII traces using an independent pinned Spike (RV32 + Zve32x)"};
+    CLI::App app{"Generate DUT-format ASCII traces using an independent pinned Spike (RV32/RV64, Zve32x/Zve64x)"};
     app.add_option("--elf", elfPath)->required();
     app.add_option("--regions", regionPath)->required();
     app.add_option("--output,-o", output)->required();
@@ -324,16 +324,18 @@ int generate(int argc, char **argv) {
     if(spurious && trimRules.empty()) throw runtime_error("--ff-spurious requires --ff-trim");
     if(priv != "MSU") throw runtime_error("tracegen: requires --priv MSU");
     u64 resetPc = number(reset);
-    if(resetPc > UINT32_MAX || resetPc & 1) throw runtime_error("Invalid RV32 reset PC");
     elfPath = filesystem::absolute(elfPath).string();
     if(elfPath.find_first_of(" \t\r\n") != string::npos)
         throw runtime_error("ASCII elf load paths cannot contain whitespace");
     if(!filesystem::is_regular_file(elfPath)) throw runtime_error("ELF does not exist: " + elfPath);
     Elf elf(elfPath.c_str());
-    if(elf.reader.get_class() != ELFCLASS32 || elf.reader.get_machine() != EM_RISCV ||
-       elf.reader.get_encoding() != ELFDATA2LSB) throw runtime_error("Expected a little-endian RV32 ELF");
+    if(elf.reader.get_machine() != EM_RISCV || elf.reader.get_encoding() != ELFDATA2LSB)
+        throw runtime_error("Expected a little-endian RISC-V ELF");
+    unsigned xlen = elf.reader.get_class() == ELFCLASS64 ? 64 : 32;
+    u64 xmask = xlen == 32 ? 0xffffffffull : ~0ull;
+    if(resetPc > xmask || resetPc & 1) throw runtime_error("Invalid reset PC");
     GeneratorSim sim;
-    readRegions(regionPath, sim);
+    readRegions(regionPath, sim, xmask);
     auto symbols = readSymbols(elf, sim);
     if(!symbols.count("pass") || !symbols.count("fail")) throw runtime_error("ELF needs pass and fail symbols");
     map<u64, u64> trims;
@@ -360,8 +362,8 @@ int generate(int argc, char **argv) {
     processor_t proc(isa.c_str(), priv.c_str(), &sim.cfg, &sim, 0, false, logs.get(), sink);
     sim.proc = &proc; sim.harts[0] = &proc;
     proc.reset(); proc.enable_commit_log_state(); proc.paddr_bits_sim = 32;
-    if(proc.get_xlen() != 32 || !proc.any_vector_extensions() || proc.VU.ELEN != 32 ||
-       proc.VU.VLEN > 512) throw runtime_error("Expected RV32, ELEN=32 and VLEN<=512 from the ISA string");
+    if(proc.get_xlen() != xlen || !proc.any_vector_extensions() || (proc.VU.ELEN != 32 && proc.VU.ELEN != 64) ||
+       proc.VU.VLEN > 512) throw runtime_error("Expected the ELF's XLEN, ELEN 32 or 64 and VLEN<=512 from the ISA string");
     auto state = proc.get_state();
     state->pc = resetPc;
     // Same counter-enable reset as Hart.
@@ -381,7 +383,7 @@ int generate(int argc, char **argv) {
     out << "elf load 0 " << elfPath << "\nrv set pc 0 " << format("{:x}", resetPc) << "\n";
     u64 count = 0, traps = 0, edits = 0;
     while(count < maxInstructions) {
-        u64 pc = state->pc & 0xffffffffull;
+        u64 pc = state->pc & xmask;
         if(pc == symbols.at("fail")) throw runtime_error(format("Program reached fail, gp={} pc=0x{:x}", state->XPR[3], pc));
         if(pc == symbols.at("pass")) break;
         Snapshot before(proc);
@@ -390,7 +392,7 @@ int generate(int argc, char **argv) {
         auto fetched = proc.get_mmu()->load_insn(pc);
         string text = disasm.disassemble(fetched.insn);
         VInsn insn = vdecode(u32(fetched.insn.bits()), text);
-        sim.current = insn; sim.base = state->XPR[insn.rs1] & 0xffffffffull;
+        sim.current = insn; sim.base = state->XPR[insn.rs1] & xmask;
         before.pre.xrs1 = state->XPR[insn.rs1];
         auto trim = trims.find(pc);
         if(trim != trims.end()) {
@@ -411,12 +413,12 @@ int generate(int argc, char **argv) {
             ++traps;
             bool m = state->prv == PRV_M;
             out << format("rv trap 0 0 {} {:x} {:x}\n", state->trap_code,
-                          (m ? state->mepc : state->sepc)->read() & 0xffffffffull,
-                          (m ? state->mtval : state->stval)->read() & 0xffffffffull);
+                          (m ? state->mepc : state->sepc)->read() & xmask,
+                          (m ? state->mtval : state->stval)->read() & xmask);
         } else out << format("rv commit 0 {:x}\n", pc);
         ++count;
     }
-    if((state->pc & 0xffffffffull) != symbols.at("pass")) throw runtime_error("Instruction limit reached before pass");
+    if((state->pc & xmask) != symbols.at("pass")) throw runtime_error("Instruction limit reached before pass");
     if(usedTrims.size() != trims.size()) throw runtime_error("An FF trim rule was never executed");
     out << format("# PASS instructions={} traps={} legal-element-edits={} ff-injections={}\n", count, traps, edits, sim.injected);
     out.flush();

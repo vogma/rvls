@@ -285,7 +285,10 @@ Hart::Hart(Context& context, u32 hartId, string isa, string priv, u32 physWidth,
     state->csrmap[CSR_CYCLEH] = std::make_shared<counter_proxy_csr_t>(proc, CSR_CYCLEH, state->csrmap[CSR_MCYCLEH]);
     backdoorWriteCsr(CSR_MCOUNTEREN, MCOUNTEREN_TIME);
     if(triggerCount == 0) {
-        state->csrmap[CSR_TINFO] = std::make_shared<inaccessible_csr_t>(proc, CSR_TINFO);
+        // Without triggers VexiiRiscv implements none of the trigger CSRs, so every access traps.
+        for(reg_t csr : {CSR_TSELECT, CSR_TDATA1, CSR_TDATA2, CSR_TINFO}) {
+            state->csrmap[csr] = std::make_shared<inaccessible_csr_t>(proc, csr);
+        }
     } else {
         state->tselect = std::make_shared<RvlsTselectCsr>(proc, CSR_TSELECT, triggerCount);
         state->csrmap[CSR_TSELECT] = state->tselect;
